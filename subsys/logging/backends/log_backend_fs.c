@@ -435,11 +435,9 @@ static int logfs_producer(uint8_t *data, size_t length, void *ctx)
 	memcpy(msg.buf, data, length);
 	msg.len = length;
 
-	ret = k_msgq_put(&log_msgq, &msg, K_NO_WAIT);
+	ret = k_msgq_put(&log_msgq, &msg, K_MSEC(100));
 	if (ret) {
-		/* msgq is full */
-		k_yield();
-		return 0;
+		return length;
 	}
 
 	ret = k_work_submit_to_queue(&logfs_queue_work_q, &logfs_msg_work);
