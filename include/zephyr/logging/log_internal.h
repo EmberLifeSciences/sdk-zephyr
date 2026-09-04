@@ -20,6 +20,8 @@ extern "C" {
  * not intended to be used outside, including logging backends.
  */
 
+struct log_link;
+
 /** @brief Structure wrapper to be used for memory section. */
 struct log_mpsc_pbuf {
 	struct mpsc_pbuf_buffer buf;
@@ -77,6 +79,17 @@ uint32_t z_log_links_activate(uint32_t active_mask, uint8_t *offset);
 
 /* Notify log_core that a backend was enabled. */
 void z_log_notify_backend_enabled(void);
+
+/* Request (re)activation of a link by the log processing thread.
+ *
+ * Used by link transports when the connection to the remote domain is
+ * (re)established after the initial boot-time activation, e.g. because the
+ * remote core rebooted or the transport reconnected. The handshake runs in
+ * the log processing thread; this function is safe to call from any context.
+ *
+ * @param link Link to (re)activate.
+ */
+void z_log_link_request_activate(const struct log_link *link);
 
 /** @brief Get pointer to the filter set of the log source.
  *

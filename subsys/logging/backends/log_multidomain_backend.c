@@ -23,6 +23,10 @@ static void process(const struct log_backend *const backend,
 		return;
 	}
 
+	if (!backend_remote->ready) {
+		return;
+	}
+
 	fsc_plen = cbprintf_fsc_package(msg->log.data,
 					msg->log.hdr.desc.package_len,
 					NULL,
@@ -89,6 +93,7 @@ void log_multidomain_backend_on_started(struct log_multidomain_backend *backend_
 void log_multidomain_backend_on_error(struct log_multidomain_backend *backend_remote, int err)
 {
 	backend_remote->status = err;
+	backend_remote->ready = false;
 }
 
 static void get_name_response(struct log_multidomain_backend *backend_remote,
@@ -226,6 +231,11 @@ static void dropped(const struct log_backend *const backend, uint32_t cnt)
 {
 	struct log_multidomain_backend *backend_remote = backend->cb->ctx;
 	int err;
+
+	if (!backend_remote->ready) {
+		return;
+	}
+
 	struct log_multidomain_msg msg = {
 		.id = Z_LOG_MULTIDOMAIN_ID_DROPPED,
 		.status = Z_LOG_MULTIDOMAIN_STATUS_OK,

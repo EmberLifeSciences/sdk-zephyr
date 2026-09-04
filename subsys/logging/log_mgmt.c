@@ -632,6 +632,25 @@ static void backends_link_init(const struct log_link *link)
 	}
 }
 
+/* Push current aggregated runtime levels to a reconnected remote domain.
+ *
+ * A remote that rebooted (or lost the transport) starts again from its
+ * compile-time levels; the local aggregated filters are still valid because
+ * the topology is unchanged, so re-send them.
+ */
+static void link_filters_reapply(const struct log_link *link)
+{
+	for (uint8_t d = link->ctrl_blk->domain_offset;
+	     d < link->ctrl_blk->domain_offset + link->ctrl_blk->domain_cnt; d++) {
+		for (uint16_t s = 0; s < log_src_cnt_get(d); s++) {
+			uint32_t level = LOG_FILTER_SLOT_GET(get_dynamic_filter(d, s),
+							     LOG_FILTER_AGGR_SLOT_IDX);
+
+			(void)z_log_link_set_runtime_level(d, s, level);
+		}
+	}
+}
+
 uint32_t z_log_links_activate(uint32_t active_mask, uint8_t *offset)
 {
 	uint32_t mask = 0x1;
@@ -647,15 +666,37 @@ uint32_t z_log_links_activate(uint32_t active_mask, uint8_t *offset)
 			int err = log_link_activate(link);
 
 			if (err == 0) {
-				uint8_t domain_cnt = log_link_domains_count(link);
+				if (link->ctrl_blk->domain_offset == 0) {
+					/* First activation: assign domain IDs
+					 * and set up runtime filters.
+					 */
+					uint8_t domain_cnt = log_link_domains_count(link);
 
-				link->ctrl_blk->domain_offset = *offset;
-				link->ctrl_blk->domain_cnt = domain_cnt;
-				*offset += domain_cnt;
-				if (IS_ENABLED(CONFIG_LOG_RUNTIME_FILTERING)) {
-					link_filters_init(link);
-					backends_link_init(link);
+					link->ctrl_blk->domain_offset = *offset;
+					link->ctrl_blk->domain_cnt = domain_cnt;
+					*offset += domain_cnt;
+					if (IS_ENABLED(CONFIG_LOG_RUNTIME_FILTERING)) {
+						link_filters_init(link);
+						backends_link_init(link);
+					}
+				} else if (IS_ENABLED(CONFIG_LOG_RUNTIME_FILTERING)) {
+					/* Reactivation after remote/transport
+					 * restart: mapping is unchanged (the
+					 * link verified it), but the remote
+					 * lost its runtime levels.
+					 */
+					link_filters_reapply(link);
 				}
+			} else if (err == -EPERM) {
+				/* Remote topology no longer matches the
+				 * established domain mapping (e.g. remote was
+				 * updated while this core kept running).
+				 * Retrying cannot succeed; drop the link until
+				 * reboot.
+				 */
+				LOG_ERR("%s: remote domain topology changed, "
+					"link disabled until reboot",
+					link->name);
 			} else {
 				out_mask |= mask;
 			}

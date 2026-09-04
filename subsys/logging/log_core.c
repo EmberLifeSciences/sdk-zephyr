@@ -104,6 +104,10 @@ static bool panic_mode;
 static bool backend_attached;
 static atomic_t buffered_cnt;
 static atomic_t dropped_cnt;
+#ifdef CONFIG_LOG_MULTIDOMAIN
+/* Links requesting (re)activation, consumed by the log processing thread. */
+static atomic_t links_reactivate_mask;
+#endif
 static k_tid_t proc_tid;
 static struct k_timer log_process_thread_timer;
 
@@ -908,6 +912,24 @@ static void log_process_thread_timer_expiry_fn(struct k_timer *timer)
 	k_sem_give(&log_process_thread_sem);
 }
 
+#ifdef CONFIG_LOG_MULTIDOMAIN
+void z_log_link_request_activate(const struct log_link *link)
+{
+	uint32_t mask = 0x1;
+
+	STRUCT_SECTION_FOREACH(log_link, l) {
+		if (l == link) {
+			atomic_or(&links_reactivate_mask, mask);
+			if (IS_ENABLED(CONFIG_LOG_PROCESS_THREAD)) {
+				log_thread_trigger();
+			}
+			return;
+		}
+		mask <<= 1;
+	}
+}
+#endif
+
 static void log_process_thread_func(void *dummy1, void *dummy2, void *dummy3)
 {
 	__ASSERT_NO_MSG(log_backend_count_get() > 0);
@@ -936,19 +958,34 @@ static void log_process_thread_func(void *dummy1, void *dummy2, void *dummy3)
 			}
 		}
 
-		/* Keep trying to activate links until all links are active. */
-		if (IS_ENABLED(CONFIG_LOG_MULTIDOMAIN) && links_active_mask) {
-			links_active_mask =
-				z_log_links_activate(links_active_mask, &domain_offset);
+		/* Keep trying to activate links until all links are active.
+		 * Links may also request reactivation at runtime, e.g. when a
+		 * remote domain reconnects after a reboot of the remote core.
+		 */
+		if (IS_ENABLED(CONFIG_LOG_MULTIDOMAIN)) {
+#ifdef CONFIG_LOG_MULTIDOMAIN
+			links_active_mask |= (uint32_t)atomic_set(&links_reactivate_mask, 0);
+#endif
+			if (links_active_mask) {
+				links_active_mask =
+					z_log_links_activate(links_active_mask, &domain_offset);
+			}
 		}
 
-
 		if (log_process() == false) {
+			k_timeout_t wait = timeout;
+
 			if (processed_any) {
 				processed_any = false;
 				log_backend_notify_all(LOG_BACKEND_EVT_PROCESS_THREAD_DONE, NULL);
 			}
-			(void)k_sem_take(&log_process_thread_sem, timeout);
+			/* While any link awaits (re)activation, poll so the
+			 * handshake retries even without log traffic.
+			 */
+			if (IS_ENABLED(CONFIG_LOG_MULTIDOMAIN) && links_active_mask) {
+				wait = K_MSEC(50);
+			}
+			(void)k_sem_take(&log_process_thread_sem, wait);
 		} else {
 			processed_any = true;
 		}
