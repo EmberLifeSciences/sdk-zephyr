@@ -9,6 +9,7 @@
 #include <zephyr/logging/log_link.h>
 #include <zephyr/logging/log_multidomain_helper.h>
 #include <zephyr/logging/log_core.h>
+#include <zephyr/logging/log_internal.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_DECLARE(link_ipc);
@@ -16,6 +17,7 @@ LOG_MODULE_DECLARE(link_ipc);
 void log_multidomain_link_on_error(struct log_multidomain_link *link_remote, int err)
 {
 	link_remote->status = err;
+	link_remote->ready = false;
 }
 
 void log_multidomain_link_on_started(struct log_multidomain_link *link_remote, int err)
@@ -24,6 +26,14 @@ void log_multidomain_link_on_started(struct log_multidomain_link *link_remote, i
 
 	if (err == 0) {
 		link_remote->ready = true;
+		if (link_remote->link != NULL) {
+			/* Ask the log processing thread to (re)run activation.
+			 * On first boot this is redundant (the thread already
+			 * polls all links); after a reconnect it is what
+			 * restarts the handshake with the remote.
+			 */
+			z_log_link_request_activate(link_remote->link);
+		}
 	}
 }
 
@@ -95,6 +105,11 @@ static int getter_msg_process(struct log_multidomain_link *link_remote,
 			      struct log_multidomain_msg *msg, size_t msg_size)
 {
 	int err;
+
+	/* Drop a stale response left over from a request that timed out
+	 * (e.g. during a connection loss) so it is not matched to this one.
+	 */
+	k_sem_reset(&link_remote->rdy_sem);
 
 	err = link_remote->transport_api->send(link_remote, msg, msg_size);
 	if (err < 0) {
@@ -182,6 +197,9 @@ static int link_remote_initiate(const struct log_link *link,
 static int link_remote_activate(const struct log_link *link)
 {
 	struct log_multidomain_link *link_remote = link->ctx;
+	uint16_t source_cnt[ARRAY_SIZE(link->ctrl_blk->source_cnt)];
+	bool established = link->ctrl_blk->domain_offset > 0;
+	uint16_t domain_cnt;
 	int err;
 
 	if (!link_remote->ready) {
@@ -192,26 +210,46 @@ static int link_remote_activate(const struct log_link *link)
 		return link_remote->status;
 	}
 
-	uint16_t cnt;
-
-	err = link_remote_get_domain_count(link_remote, &cnt);
+	err = link_remote_get_domain_count(link_remote, &domain_cnt);
 	if (err < 0) {
 		return err;
 	}
 
-	if (cnt > ARRAY_SIZE(link->ctrl_blk->source_cnt)) {
+	if (domain_cnt > ARRAY_SIZE(link->ctrl_blk->source_cnt)) {
 		__ASSERT(0, "Number of domains not supported.");
 		return -ENOMEM;
 	}
 
-	link->ctrl_blk->domain_cnt = cnt;
-	for (int i = 0; i < link->ctrl_blk->domain_cnt; i++) {
-		err = link_remote_get_source_count(link_remote, i, &cnt);
+	/* Collect the remote topology before committing anything, so a
+	 * reconnecting remote whose topology changed can be rejected without
+	 * corrupting the established domain mapping.
+	 */
+	for (uint16_t i = 0; i < domain_cnt; i++) {
+		err = link_remote_get_source_count(link_remote, i, &source_cnt[i]);
 		if (err < 0) {
 			return err;
 		}
+	}
 
-		link->ctrl_blk->source_cnt[i] = cnt;
+	if (established) {
+		/* Reactivation: domain IDs and filter storage were assigned on
+		 * the first activation and are referenced by buffered messages
+		 * and backends. The remote must present the same topology;
+		 * otherwise reject the session before sending READY.
+		 */
+		if (domain_cnt != link->ctrl_blk->domain_cnt) {
+			return -EPERM;
+		}
+		for (uint16_t i = 0; i < domain_cnt; i++) {
+			if (source_cnt[i] != link->ctrl_blk->source_cnt[i]) {
+				return -EPERM;
+			}
+		}
+	} else {
+		link->ctrl_blk->domain_cnt = domain_cnt;
+		for (uint16_t i = 0; i < domain_cnt; i++) {
+			link->ctrl_blk->source_cnt[i] = source_cnt[i];
+		}
 	}
 
 	err = link_remote_ready(link_remote);

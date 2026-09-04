@@ -240,4 +240,60 @@ ZTEST(log_links, test_log_source_name_get)
 	test_single_log_source_name_get(3, 3, domains_b[0]->sources[3].source);
 }
 
+ZTEST(log_links, test_reactivation_preserves_mapping_and_filters)
+{
+	uint8_t offset = 0;
+	uint32_t remaining;
+
+	log_setup(false);
+
+	uint32_t exp_offset1 = mock_link1.ctrl_blk->domain_offset;
+	uint32_t exp_offset2 = mock_link2.ctrl_blk->domain_offset;
+	uint8_t exp_domains = log_domains_count();
+	uint32_t *exp_filters1 = mock_link1.ctrl_blk->filters;
+
+	zassert_true(exp_offset1 > 0, "link1 must be active before reactivation");
+
+	/* Simulate the remote behind link1 reconnecting (e.g. remote core
+	 * reboot): re-run activation for that link only.
+	 */
+	remaining = z_log_links_activate(BIT(0), &offset);
+	zassert_equal(remaining, 0, "link1 must reactivate (mask: 0x%x)", remaining);
+
+	/* Established mapping and filter storage must be preserved. */
+	zassert_equal(mock_link1.ctrl_blk->domain_offset, exp_offset1,
+		      "domain offset must not move on reactivation");
+	zassert_equal(mock_link2.ctrl_blk->domain_offset, exp_offset2,
+		      "other links must be untouched");
+	zassert_equal(log_domains_count(), exp_domains,
+		      "domain count must not grow on reactivation");
+	zassert_equal_ptr(mock_link1.ctrl_blk->filters, exp_filters1,
+			  "runtime filters must not be reallocated");
+}
+
+ZTEST(log_links, test_reactivation_reapplies_runtime_levels)
+{
+	uint8_t offset = 0;
+	uint32_t remaining;
+
+	log_setup(false);
+
+	/* Configure a runtime level for domain 1 (link1) source 0 and let it
+	 * propagate to the remote.
+	 */
+	log_filter_set(&backend1, 1, 0, 2);
+	zassert_equal(domains_a[0]->sources[0].rlevel, 2,
+		      "level must reach the remote");
+
+	/* Remote reboots: it comes back with its own defaults. */
+	domains_a[0]->sources[0].rlevel = 0;
+
+	remaining = z_log_links_activate(BIT(0), &offset);
+	zassert_equal(remaining, 0, "link1 must reactivate (mask: 0x%x)", remaining);
+
+	/* Reactivation must push the aggregated runtime level again. */
+	zassert_equal(domains_a[0]->sources[0].rlevel, 2,
+		      "runtime level must be reapplied to the reconnected remote");
+}
+
 ZTEST_SUITE(log_links, NULL, NULL, NULL, NULL, NULL);
