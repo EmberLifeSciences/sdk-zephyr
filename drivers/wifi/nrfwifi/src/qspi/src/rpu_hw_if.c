@@ -211,11 +211,13 @@ static int rpu_gpio_remove(void)
 		return ret;
 	}
 
+#ifndef CONFIG_NRF70_IOVDD_KEEP_ON
 	ret = gpio_pin_configure_dt(&iovdd_ctrl_spec, GPIO_DISCONNECTED);
 	if (ret) {
 		LOG_ERR("IOVDD GPIO remove failed...");
 		return ret;
 	}
+#endif /* !CONFIG_NRF70_IOVDD_KEEP_ON */
 
 	LOG_DBG("GPIO remove done...\n");
 	return ret;
@@ -266,11 +268,19 @@ static int rpu_pwroff(void)
 		return ret;
 	}
 
+#ifdef CONFIG_NRF70_IOVDD_KEEP_ON
+	/* Shutdown is entered on BUCKEN de-assertion alone. IOVDD stays
+	 * applied so that host-side IOs shared with other devices on the bus
+	 * are never driven into an unpowered IO domain.
+	 */
+	LOG_DBG("BUCKEN = 0, IOVDD kept on");
+#else
 	ret = gpio_pin_set_dt(&iovdd_ctrl_spec, 0); /* IOVDD CNTRL = 0 */
 	if (ret) {
 		LOG_ERR("IOVDD GPIO set failed...");
 		return ret;
 	}
+#endif /* CONFIG_NRF70_IOVDD_KEEP_ON */
 
 	return ret;
 }

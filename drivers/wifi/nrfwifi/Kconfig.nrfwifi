@@ -208,6 +208,20 @@ config NRF70_SR_COEX
 config NRF70_SR_COEX_RF_SWITCH
 	bool "GPIO configuration to control SR side RF switch position"
 
+config NRF70_IOVDD_KEEP_ON
+	bool "Keep IOVDD powered when the nRF70 is shut down"
+	help
+	  By default the driver removes both BUCKEN and IOVDD when the
+	  interface is brought down. Select this option to leave the
+	  IOVDD control GPIO asserted after the first power-up so that only
+	  BUCKEN is toggled on later shutdown/power-up cycles. Use this on
+	  boards where the nRF70 shares its SPI/QSPI bus or its IOVDD rail
+	  with other devices that stay active while Wi-Fi is down: with
+	  IOVDD removed, any host-side IO driven high violates the nRF70
+	  absolute maximum rating of VI/O <= IOVDD + 0.3 V. The first
+	  power-up still follows the specified VBAT -> BUCKEN -> IOVDD
+	  sequence.
+
 config NRF70_WORKQ_STACK_SIZE
 	int "Stack size for workqueue"
 	default 4096
